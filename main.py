@@ -34,7 +34,7 @@ class AnalysisResponse(BaseModel):
     f0_std: float
     quality_score: float
     feedback: str
-    spectrogram_url: str  # ← NUEVO CAMPO
+    spectrogram_url: str
 
 def calculate_jitter(f0_series):
     if len(f0_series) < 2:
@@ -102,7 +102,7 @@ async def analyze_voice(request: AnalysisRequest):
         plt.colorbar(format='%+2.0f dB')
         plt.title('Espectrograma')
         
-        # Guardar en memoria
+        # Guardar en memoria como base64
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
         buf.seek(0)
@@ -123,7 +123,7 @@ async def analyze_voice(request: AnalysisRequest):
         if shimmer < 3.0:
             feedback.append("✅ Buen control de volumen")
         elif shimmer < 5.0:
-            feedback.append("⚠️ Variaciones en la intensidad")
+            feedback.append("️ Variaciones en la intensidad")
         else:
             feedback.append("❌ Inconsistencia en el volumen")
         
