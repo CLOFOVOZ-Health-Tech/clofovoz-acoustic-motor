@@ -6,7 +6,7 @@ import librosa
 import numpy as np
 from typing import Optional
 
-app = FastAPI(title="CLOFOVOZ Acoustic Engine")
+app = FastAPI(title="CLOFOVOZ Acoustic Motor")
 
 # CORS para permitir conexiones desde localhost:3000
 app.add_middleware(
@@ -136,7 +136,7 @@ def generate_feedback(metrics):
 
 @app.get("/")
 def root():
-    return {"message": "CLOFOVOZ Acoustic Engine API", "status": "running"}
+    return {"message": "CLOFOVOZ Acoustic Motor API", "status": "running"}
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_voice(request: AnalysisRequest):
