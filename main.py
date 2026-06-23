@@ -11,6 +11,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 import base64
+from functools import lru_cache
 
 app = FastAPI(title="CLOFOVOZ Acoustic Engine")
 
@@ -36,24 +37,33 @@ class AnalysisResponse(BaseModel):
     feedback: str
     spectrogram_url: str
 
+@lru_cache(maxsize=1)
+def get_frequency_bounds():
+    """Cache frequency bounds to avoid recalculation"""
+    return librosa.note_to_hz('C2'), librosa.note_to_hz('C7')
+
 def calculate_jitter(f0_series):
-    if len(f0_series) < 2:
+    """Vectorized jitter calculation with early exit"""
+    n = len(f0_series)
+    if n < 2:
         return 0.0
-    differences = np.abs(np.diff(f0_series))
-    mean_diff = np.mean(differences)
     mean_f0 = np.mean(f0_series)
     if mean_f0 == 0:
         return 0.0
+    # Vectorized: calculate mean of absolute differences directly
+    mean_diff = np.mean(np.abs(np.diff(f0_series)))
     return (mean_diff / mean_f0) * 100
 
 def calculate_shimmer(amplitude_series):
-    if len(amplitude_series) < 2:
+    """Vectorized shimmer calculation with early exit"""
+    n = len(amplitude_series)
+    if n < 2:
         return 0.0
-    differences = np.abs(np.diff(amplitude_series))
-    mean_diff = np.mean(differences)
     mean_amp = np.mean(amplitude_series)
     if mean_amp == 0:
         return 0.0
+    # Vectorized: calculate mean of absolute differences directly
+    mean_diff = np.mean(np.abs(np.diff(amplitude_series)))
     return (mean_diff / mean_amp) * 100
 
 @app.get("/")
@@ -62,23 +72,26 @@ def root():
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_voice(request: AnalysisRequest):
+    temp_path = None
     try:
-        # Descargar audio
-        response = requests.get(request.audio_url)
+        # Descargar audio con timeout y streaming
+        response = requests.get(request.audio_url, timeout=30, stream=True)
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="No se pudo descargar el audio")
         
         # Guardar temporal
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as f:
-            f.write(response.content)
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
             temp_path = f.name
         
-        # Analizar
-        y, sr = librosa.load(temp_path, sr=None)
+        # Analizar con parámetros optimizados
+        y, sr = librosa.load(temp_path, sr=None, mono=True)
         
-        # F0
+        # F0 con límites cacheados
+        fmin, fmax = get_frequency_bounds()
         f0, voiced_flag, voiced_probs = librosa.pyin(
-            y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'), sr=sr
+            y, fmin=fmin, fmax=fmax, sr=sr
         )
         f0 = f0[~np.isnan(f0)]
         if len(f0) == 0:
@@ -95,19 +108,20 @@ async def analyze_voice(request: AnalysisRequest):
         # Calidad
         quality_score = max(0, min(10, 10 - (jitter * 2) - (shimmer * 2)))
         
-        # Generar Espectrograma
+        # Generar Espectrograma optimizado
         D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
-        plt.figure(figsize=(10, 4))
-        librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='log')
-        plt.colorbar(format='%+2.0f dB')
-        plt.title('Espectrograma')
+        fig, ax = plt.subplots(figsize=(10, 4), dpi=100)
+        img = librosa.display.specshow(D, sr=sr, x_axis='time', y_axis='log', ax=ax)
+        ax.set_title('Espectrogramo')
+        fig.colorbar(img, format='%+2.0f dB', ax=ax)
         
         # Guardar en memoria como base64
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
+        fig.savefig(buf, format='png', bbox_inches='tight', dpi=100)
         buf.seek(0)
         image_base64 = base64.b64encode(buf.read()).decode('utf-8')
-        plt.close()
+        plt.close(fig)
+        buf.close()
         
         spectrogram_url = f"data:image/png;base64,{image_base64}"
         
@@ -129,9 +143,6 @@ async def analyze_voice(request: AnalysisRequest):
         
         feedback_text = " | ".join(feedback)
         
-        # Limpiar
-        os.unlink(temp_path)
-        
         return AnalysisResponse(
             jitter=round(jitter, 4),
             shimmer=round(shimmer, 4),
@@ -144,6 +155,10 @@ async def analyze_voice(request: AnalysisRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Limpieza garantizada
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 if __name__ == "__main__":
     import os
